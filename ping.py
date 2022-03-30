@@ -19,17 +19,3 @@ Trans.count = 50
 result = Trans.ping()
 result_out = ping_parse.parse(result).as_dict()
 print(result_out['packet_loss_rate'])
-
-
-
-
-
-
-
-
-
-
-
-
-
-
