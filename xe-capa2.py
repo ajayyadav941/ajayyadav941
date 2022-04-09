@@ -22,5 +22,5 @@ if Username == 'admin' and Password=='cisco':
     print(pretty_config)
 
 else:
-    print('Please Check Usernmae/Password')
+    print('Please Check Username/Password')
 
