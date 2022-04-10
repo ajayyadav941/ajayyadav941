@@ -8,7 +8,7 @@ xe = {
         'host': '192.168.247.147',
         'port':'830',
         'username':input("Enter Username: "),
-        'password':Password,
+        'password':getpass('Enter Your password: '),
         'hostkey_verify':False
 }
 
