@@ -2,7 +2,7 @@ from ncclient import manager
 from getpass import getpass
 from xml.dom.minidom import parseString
 
-Password = input('Enter Your Password:')
+#Password = input('Enter Your Password:')
 
 xe = {
         'host': '192.168.247.147',
