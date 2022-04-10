@@ -1,6 +1,7 @@
 from ncclient import manager
 from getpass import getpass
 from xml.dom.minidom import parseString
+import json
 
 Username = input('Enter Your Username:')
 Password = input('Enter Your Password:')
