@@ -2,7 +2,7 @@ from netmiko import ConnectHandler
 from getpass import getpass
 
 
-R1= '192.168.247.141'
+R1= '192.168.247.142'
 R2= '192.168.247.141'
 R3 = '192.168.247.147'
 
