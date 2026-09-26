@@ -1,0 +1,6 @@
+.venv/
+.jenkins-venv/
+.pytest_cache/
+__pycache__/
+reports/
+topology/clab-*/

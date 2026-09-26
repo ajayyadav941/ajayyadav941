@@ -1,0 +1,192 @@
+pipeline {
+    agent any
+
+    options { disableConcurrentBuilds() }
+
+    environment {
+        PROJECT_SUBDIR = 'Containerlab_Python_Labs'
+        CI_ROOT = '/home/jenkins/ci'
+        CI_DIR = '/home/jenkins/ci/network-testing'
+        LAB_USERNAME = credentials('network-lab-username')
+        LAB_PASSWORD = credentials('network-lab-password')
+    }
+
+    stages {
+        stage('Environment Check') {
+            steps {
+                sh '''
+                    set -eu
+                    whoami
+                    pwd
+                    test -S /var/run/docker.sock
+                    docker --version
+                    docker ps >/dev/null
+                    containerlab version
+                    python3 --version
+                    git --version
+                    test -n "$LAB_PASSWORD"
+                '''
+            }
+        }
+
+        stage('Prepare CI Workspace') {
+            steps {
+                sh '''
+                    set -eu
+                    rm -f "$WORKSPACE/results.xml"
+                    mkdir -p "$CI_ROOT"
+                    rm -rf "$CI_DIR"
+                    mkdir -p "$CI_DIR"
+                    cp -a "$WORKSPACE/$PROJECT_SUBDIR/." "$CI_DIR/"
+                    rm -rf "$CI_DIR/.jenkins-venv" "$CI_DIR/reports"
+                    rm -f "$CI_DIR/results.xml"
+                    find "$CI_DIR/topology" -maxdepth 1 -type d -name 'clab-*' -exec rm -rf {} + 2>/dev/null || true
+                '''
+            }
+        }
+
+        stage('Verify Lab Image') {
+            steps {
+                sh '''
+                    set -eu
+                    docker image inspect frr-netmiko:latest >/dev/null
+                    echo "frr-netmiko:latest is available"
+                '''
+            }
+        }
+
+        stage('Install Python Dependencies') {
+            steps {
+                sh '''
+                    set -eu
+                    cd "$CI_DIR"
+                    python3 -m venv .jenkins-venv
+                    .jenkins-venv/bin/python -m pip install --upgrade pip
+                    .jenkins-venv/bin/pip install -r requirements.txt
+                    .jenkins-venv/bin/python -c "import netmiko, pytest; print('Python dependencies OK')"
+                '''
+            }
+        }
+
+        stage('Clean Old Lab') {
+            steps {
+                sh '''
+                    cd "$CI_DIR"
+                    containerlab destroy -t topology/lab.clab.yml --cleanup || true
+                '''
+            }
+        }
+
+        stage('Deploy Lab') {
+            steps {
+                sh '''
+                    set -eu
+                    cd "$CI_DIR"
+                    containerlab deploy -t topology/lab.clab.yml
+                    containerlab inspect -t topology/lab.clab.yml
+                '''
+            }
+        }
+
+        stage('Wait for SSH') {
+            steps {
+                sh '''
+                    set -eu
+                    for host in 172.20.20.11 172.20.20.12; do
+                        READY=0
+                        for i in $(seq 1 30); do
+                            if nc -z "$host" 22; then READY=1; break; fi
+                            sleep 2
+                        done
+                        [ "$READY" -eq 1 ]
+                    done
+                '''
+            }
+        }
+
+        stage('Wait for FRR') {
+            steps {
+                sh '''
+                    set -eu
+                    for router in r1 r2; do
+                        container="clab-pytest-lab-$router"
+                        READY=0
+                        for i in $(seq 1 30); do
+                            ZEBRA=$(docker exec "$container" ps aux | grep '/usr/lib/frr/zebra' | grep -v grep || true)
+                            BGPD=$(docker exec "$container" ps aux | grep '/usr/lib/frr/bgpd' | grep -v grep || true)
+                            if [ -n "$ZEBRA" ] && [ -n "$BGPD" ] &&
+                               docker exec "$container" vtysh -c "show zebra" >/dev/null 2>&1; then
+                                READY=1
+                                break
+                            fi
+                            sleep 2
+                        done
+                        if [ "$READY" -ne 1 ]; then
+                            docker exec "$container" ps aux || true
+                            docker logs "$container" || true
+                            exit 1
+                        fi
+                    done
+                '''
+            }
+        }
+
+        stage('Manual BGP Verification') {
+            steps {
+                sh '''
+                    set -eu
+                    docker exec clab-pytest-lab-r1 vtysh -c "show ip bgp summary"
+                    docker exec clab-pytest-lab-r2 vtysh -c "show ip bgp summary"
+                    docker exec clab-pytest-lab-r1 vtysh -c "show ip route bgp"
+                    docker exec clab-pytest-lab-r2 vtysh -c "show ip route bgp"
+                '''
+            }
+        }
+
+        stage('Run Network Tests') {
+            steps {
+                script {
+                    int pytestStatus = sh(
+                        script: '''
+                            set +e
+                            cd "$CI_DIR"
+                            mkdir -p reports
+                            rm -f reports/results.xml
+                            export LAB_USERNAME="$LAB_USERNAME"
+                            export LAB_PASSWORD="$LAB_PASSWORD"
+                            .jenkins-venv/bin/pytest -v -s \
+                                tests/test_bgp.py tests/test_ping.py \
+                                --junitxml=reports/results.xml
+                            exit $?
+                        ''',
+                        returnStatus: true
+                    )
+
+                    sh '''
+                        if [ -f "$CI_DIR/reports/results.xml" ]; then
+                            cp "$CI_DIR/reports/results.xml" "$WORKSPACE/results.xml"
+                        fi
+                    '''
+
+                    if (pytestStatus != 0) {
+                        error("Network tests failed")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            junit allowEmptyResults: true, testResults: 'results.xml'
+            sh '''
+                if [ -f "$CI_DIR/topology/lab.clab.yml" ]; then
+                    cd "$CI_DIR"
+                    containerlab destroy -t topology/lab.clab.yml --cleanup || true
+                fi
+            '''
+        }
+        success { echo "NETWORK TEST PIPELINE PASSED" }
+        failure { echo "NETWORK TEST PIPELINE FAILED" }
+    }
+}

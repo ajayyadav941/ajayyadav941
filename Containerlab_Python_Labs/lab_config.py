@@ -1,0 +1,4 @@
+LAB_USERNAME = "root"
+LAB_PASSWORD = "admin"
+R1_HOST = "172.20.20.11"
+R2_HOST = "172.20.20.12"

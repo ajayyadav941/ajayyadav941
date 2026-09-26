@@ -1,0 +1,30 @@
+name: pytest-lab
+
+mgmt:
+  network: clab
+  ipv4-subnet: 172.20.20.0/24
+
+topology:
+  nodes:
+    r1:
+      kind: linux
+      image: frr-netmiko:latest
+      mgmt-ipv4: 172.20.20.11
+      binds:
+        - ../configs/r1/daemons:/etc/frr/daemons
+        - ../configs/r1/zebra.conf:/etc/frr/zebra.conf
+        - ../configs/r1/bgpd.conf:/etc/frr/bgpd.conf
+
+    r2:
+      kind: linux
+      image: frr-netmiko:latest
+      mgmt-ipv4: 172.20.20.12
+      binds:
+        - ../configs/r2/daemons:/etc/frr/daemons
+        - ../configs/r2/zebra.conf:/etc/frr/zebra.conf
+        - ../configs/r2/bgpd.conf:/etc/frr/bgpd.conf
+
+  links:
+    - endpoints:
+        - r1:eth1
+        - r2:eth1

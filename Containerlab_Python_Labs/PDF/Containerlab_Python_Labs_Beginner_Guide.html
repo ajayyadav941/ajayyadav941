@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Containerlab Python Labs — Beginner Step-by-Step Guide</title>
+  <style>
+    @page { size: A4; margin: 18mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #000; background: #fff; font-family: Times, "Times New Roman", serif; font-size: 12pt; line-height: 1.45; }
+    h1 { font-size: 20pt; margin: 0 0 12px; font-weight: bold; }
+    h2 { font-size: 14pt; margin: 20px 0 8px; border-bottom: 1px solid #000; padding-bottom: 3px; page-break-after: avoid; }
+    h3 { font-size: 12.5pt; margin: 14px 0 6px; page-break-after: avoid; }
+    p { margin: 6px 0; }
+    ul, ol { margin: 6px 0 10px 22px; }
+    li { margin: 3px 0; }
+    pre {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 10pt;
+      border: 1px solid #000;
+      padding: 8px 10px;
+      white-space: pre;
+      overflow-x: auto;
+      page-break-inside: avoid;
+      background: #fff;
+      color: #000;
+    }
+    .part { page-break-before: always; }
+    .qa { margin: 12px 0 16px; page-break-inside: avoid; }
+    .stack { margin: 8px 0 14px; }
+    .stack p { padding: 6px 0; margin: 0; border-bottom: 1px solid #777; page-break-inside: avoid; }
+    .stack p:last-child { border-bottom: none; }
+</style>
+</head>
+<body>
+<h1>Containerlab Python Labs — Beginner Step-by-Step Guide</h1>
+<p>This document has two sections. The first section is the full lab, from a clean Ubuntu computer to Jenkins. The second section is practice with questions and answers.</p>
+<p>Follow the steps in order. Do not skip a failed step. Always repair the lowest layer first (Ubuntu, then Docker, then Containerlab, then ping, then BGP, then SSH, then Python, then pytest, then Jenkins).</p>
+<p>GitHub folder used in this guide:</p>
+<pre>https://github.com/ajayyadav941/Network_Automation/tree/main/Containerlab_Python_Labs</pre>
+<p>On your computer the working directory is:</p>
+<pre>~/Network_Automation/Containerlab_Python_Labs</pre>
+<p>Use the canonical project folder <strong>Containerlab_Python_Labs</strong> everywhere in this guide.</p>
+
+<h2>What you will build</h2>
+<p>You will run two FRRouting (FRR) routers in Docker using Containerlab. The routers form an eBGP session, advertise loopback prefixes, and you will prove the network with ping, SSH, Netmiko, pytest, and Jenkins.</p>
+<pre>                         10.1.100.0/30
+
+        R1 ------------------------------------- R2
+        FRR                                      FRR
+        AS 65001                                 AS 65002
+        Lo: 1.1.1.1/32                           Lo: 2.2.2.2/32
+        eth1: 10.1.100.1/30                      eth1: 10.1.100.2/30
+        Mgmt: 172.20.20.11                       Mgmt: 172.20.20.12</pre>
+<p>Expected learned routes:</p>
+<pre>R1 learns 2.2.2.2/32 via 10.1.100.2
+R2 learns 1.1.1.1/32 via 10.1.100.1</pre>
+
+<h2>Words used in this lab</h2>
+<div class="stack">
+<p><strong>Ubuntu</strong><br>The Linux computer (VM or laptop) where you type commands.</p>
+<p><strong>Docker</strong><br>Runs each router as a container. The image is the blueprint. The container is the running router.</p>
+<p><strong>Containerlab</strong><br>Reads topology/lab.clab.yml, starts the two router containers, and connects eth1 to eth1.</p>
+<p><strong>FRR</strong><br>Free routing software. zebra handles interfaces/routes. bgpd handles BGP.</p>
+<p><strong>BGP</strong><br>The protocol that exchanges the loopback prefixes between R1 and R2.</p>
+<p><strong>Management IP</strong><br>172.20.20.11 and 172.20.20.12. You SSH here from Ubuntu. This is not the 10.1.100.0/30 peer link.</p>
+<p><strong>SSH</strong><br>Remote login to a router. Netmiko uses SSH.</p>
+<p><strong>Netmiko</strong><br>Python library that opens SSH and sends commands.</p>
+<p><strong>pytest</strong><br>Python test runner. Six tests must pass.</p>
+<p><strong>JUnit XML</strong><br>A results file Jenkins can display.</p>
+<p><strong>Jenkins</strong><br>CI: clone Git, deploy the lab, run tests, publish results, destroy the lab.</p>
+</div>
+
+<h2>What you need before you start</h2>
+<ul>
+<li>Ubuntu 22.04 or 24.04 (a VM is fine). 4 GB RAM is a practical minimum. 8 GB is more comfortable.</li>
+<li>Internet access to install Docker, Containerlab, and Python packages, and to clone GitHub.</li>
+<li>A GitHub account that can read the private repository Network_Automation.</li>
+<li>About 20 GB free disk.</li>
+</ul>
+<p>This is a classroom lab on one VM. Jenkins runs privileged with access to the host Docker socket. Do not copy that design to a production Jenkins server.</p>
+
+<h2>Lab password used in this repository</h2>
+<p>The Docker image is built with a password. The Python tests read the password from the <code>LAB_PASSWORD</code> environment variable, so the same value must be used when building the image and running pytest:</p>
+<pre>export LAB_USERNAME='root'
+export LAB_PASSWORD='admin'</pre>
+<p><strong>Classroom example:</strong> <code>admin</code> is used in the commands below. You may choose another password; if you do, export that same value before running Netmiko, pytest, and Jenkins.</p>
+
+<h2>Golden troubleshooting order</h2>
+<pre>Host / Ubuntu
+   ↓
+Docker
+   ↓
+Containerlab
+   ↓
+Containers running
+   ↓
+Interfaces (eth1 addresses)
+   ↓
+Direct peer ping (10.1.100.1 &lt;-&gt; 10.1.100.2)
+   ↓
+Zebra / bgpd processes
+   ↓
+BGP Established (not Active, Idle, or Policy)
+   ↓
+BGP routes (loopbacks learned)
+   ↓
+Loopback ping (1.1.1.1 &lt;-&gt; 2.2.2.2)
+   ↓
+SSH to management IPs
+   ↓
+Netmiko
+   ↓
+pytest (6 passed)
+   ↓
+JUnit
+   ↓
+Jenkins</pre>
+
+<div class="part">
+<h2>Part A — Ubuntu, Docker, Containerlab, and Git</h2>
+
+<h3>Step 1. Open a terminal on Ubuntu</h3>
+<p>Log in as your normal user. Do not stay as root for the whole lab. Commands that need root use sudo.</p>
+<pre>whoami
+hostname
+pwd</pre>
+
+<h3>Step 2. Update Ubuntu and install basic tools</h3>
+<pre>sudo apt update
+sudo apt upgrade -y
+sudo apt install -y git curl ca-certificates python3 python3-pip python3-venv netcat-openbsd iproute2</pre>
+<p>Verify:</p>
+<pre>python3 --version
+git --version
+ip addr
+free -h
+df -h</pre>
+<p>You should see a Python 3 version, a Git version, at least one IP address, free memory, and free disk.</p>
+
+<h3>Step 3. Install Docker Engine</h3>
+<p>Use Docker’s official Ubuntu install. After install:</p>
+<pre>docker --version
+sudo systemctl enable --now docker
+sudo systemctl status docker --no-pager
+sudo docker run --rm hello-world</pre>
+<p>Allow your user to run Docker without sudo:</p>
+<pre>sudo usermod -aG docker $USER
+newgrp docker
+docker ps</pre>
+<p>Expected: docker ps prints a table and does not say “permission denied”. If it still fails, log out of Ubuntu and log in again so the docker group is applied.</p>
+
+<h3>Step 4. Install Containerlab</h3>
+<pre>bash -c "$(curl -sL https://get.containerlab.dev)"
+containerlab version</pre>
+<p>Containerlab is the tool that will start R1 and R2 from topology/lab.clab.yml.</p>
+
+<h3>Step 5. Clone the repository</h3>
+<p>If the repository is private, HTTPS may ask for a token. SSH is often easier after you add your public key in GitHub.</p>
+<p>HTTPS:</p>
+<pre>cd ~
+git clone https://github.com/ajayyadav941/Network_Automation.git
+cd ~/Network_Automation/Containerlab_Python_Labs
+pwd
+ls</pre>
+<p>SSH:</p>
+<pre>cd ~
+git clone git@github.com:ajayyadav941/Network_Automation.git
+cd ~/Network_Automation/Containerlab_Python_Labs</pre>
+<p>You must see files such as topology/, configs/, docker/, tests/, scripts/, Jenkinsfile, requirements.txt, and Network_Testing_Containerlab.md.</p>
+<pre>find . -maxdepth 3 -type f | sort</pre>
+
+<h3>Step 6. Understand the folder (do not skip this)</h3>
+<pre>Containerlab_Python_Labs/
+├── topology/lab.clab.yml          topology: R1, R2, link, management IPs
+├── docker/Dockerfile              FRR image with SSH
+├── configs/r1/                    daemons, zebra.conf, bgpd.conf for R1
+├── configs/r2/                    same files for R2
+├── lab_config.py                  IPs, username, password for one Netmiko script
+├── scripts/bgp_check.py           Netmiko: R1 BGP summary
+├── scripts/Both_Router_bgp_check.py
+├── scripts/run_tests.sh           runs pytest and writes JUnit XML
+├── tests/conftest.py              SSH fixtures for pytest
+├── tests/test_bgp.py              four BGP tests
+├── tests/test_ping.py             two loopback ping tests
+├── requirements.txt               pytest and netmiko
+├── jenkins/Dockerfile             Jenkins image for this classroom
+└── Jenkinsfile                    CI pipeline</pre>
+</div>
+
+<div class="part">
+<h2>Part B — Build the FRR + SSH Docker image</h2>
+<p>The topology uses image frr-netmiko:latest. That image is not downloaded ready-made. You build it once from docker/Dockerfile. The Dockerfile starts from frrouting/frr:latest, installs OpenSSH, sets the root password, and starts sshd plus FRR.</p>
+
+<h3>Step 7. Set the lab password in this terminal</h3>
+<pre>cd ~/Network_Automation/Containerlab_Python_Labs
+export LAB_USERNAME='root'
+export LAB_PASSWORD='admin'</pre>
+<p>Keep this terminal open, or export the same values again later.</p>
+
+<h3>Step 8. Build the image</h3>
+<pre>docker build \
+  --build-arg LAB_PASSWORD="$LAB_PASSWORD" \
+  -t frr-netmiko:latest \
+  -f docker/Dockerfile .</pre>
+<p>The last argument is a dot. It means “use this folder as the build context”. The command must be run from Containerlab_Python_Labs.</p>
+<p>Verify:</p>
+<pre>docker images | grep frr-netmiko</pre>
+<p>Expected:</p>
+<pre>frr-netmiko   latest</pre>
+<p>If LAB_PASSWORD is empty, the build fails on purpose (the Dockerfile checks that the argument is set).</p>
+</div>
+
+<div class="part">
+<h2>Part C — What the router configs do</h2>
+<p>You do not type these files by hand unless you are changing the lab. They are already in Git. Read them so you know what “success” looks like.</p>
+
+<h3>Step 9. daemons (both routers)</h3>
+<p>configs/r1/daemons and configs/r2/daemons turn on:</p>
+<pre>zebra=yes
+bgpd=yes
+staticd=yes</pre>
+<p>zebra owns interfaces and the routing table. bgpd speaks BGP. Other protocols stay no.</p>
+
+<h3>Step 10. R1 interfaces (zebra.conf)</h3>
+<pre>hostname r1
+!
+interface eth1
+ ip address 10.1.100.1/30
+!
+interface lo
+ ip address 1.1.1.1/32
+!</pre>
+
+<h3>Step 11. R1 BGP (bgpd.conf)</h3>
+<pre>hostname r1
+!
+router bgp 65001
+ bgp router-id 1.1.1.1
+ no bgp ebgp-requires-policy
+ neighbor 10.1.100.2 remote-as 65002
+ !
+ address-family ipv4 unicast
+  network 1.1.1.1/32
+  neighbor 10.1.100.2 activate
+ exit-address-family
+!</pre>
+
+<h3>Step 12. R2 interfaces</h3>
+<pre>hostname r2
+!
+interface eth1
+ ip address 10.1.100.2/30
+!
+interface lo
+ ip address 2.2.2.2/32
+!</pre>
+
+<h3>Step 13. R2 BGP</h3>
+<pre>hostname r2
+!
+router bgp 65002
+ bgp router-id 2.2.2.2
+ no bgp ebgp-requires-policy
+ neighbor 10.1.100.1 remote-as 65001
+ !
+ address-family ipv4 unicast
+  network 2.2.2.2/32
+  neighbor 10.1.100.1 activate
+ exit-address-family
+!</pre>
+<p>no bgp ebgp-requires-policy is required in this classroom eBGP lab. Without it, FRR may show (Policy) and routes will not install.</p>
+
+<h3>Step 14. Topology file</h3>
+<p>topology/lab.clab.yml names the lab pytest-lab, uses management subnet 172.20.20.0/24, sets R1 to 172.20.20.11 and R2 to 172.20.20.12, bind-mounts the config files, and connects r1:eth1 to r2:eth1.</p>
+<p>Container names after deploy:</p>
+<pre>clab-pytest-lab-r1
+clab-pytest-lab-r2</pre>
+</div>
+
+<div class="part">
+<h2>Part D — Deploy the lab</h2>
+
+<h3>Step 15. Check that 172.20.20.0/24 is free</h3>
+<pre>docker network ls
+for n in $(docker network ls -q); do
+  docker network inspect "$n" --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}'
+done</pre>
+<p>If another Docker network already uses 172.20.20.0/24, you must change the management subnet and both management IPs in lab.clab.yml and in the Python files together. Freshers should keep the default if the subnet is free.</p>
+
+<h3>Step 16. Deploy</h3>
+<pre>cd ~/Network_Automation/Containerlab_Python_Labs
+containerlab deploy -t topology/lab.clab.yml</pre>
+<p>Inspect:</p>
+<pre>containerlab inspect -t topology/lab.clab.yml
+docker ps</pre>
+<p>Expected management addresses: r1 172.20.20.11, r2 172.20.20.12. Expected containers: clab-pytest-lab-r1 and clab-pytest-lab-r2.</p>
+<p>If deploy fails because the image is missing, go back to Step 8. If deploy fails because of permissions, go back to Step 3.</p>
+</div>
+
+<div class="part">
+<h2>Part E — Manual network checks (do these before Python)</h2>
+
+<h3>Step 17. Check eth1 addresses</h3>
+<pre>docker exec clab-pytest-lab-r1 ip addr show eth1
+docker exec clab-pytest-lab-r2 ip addr show eth1</pre>
+<p>Expected: R1 eth1 is 10.1.100.1/30. R2 eth1 is 10.1.100.2/30.</p>
+
+<h3>Step 18. Ping the peer link</h3>
+<pre>docker exec clab-pytest-lab-r1 ping -c 4 10.1.100.2
+docker exec clab-pytest-lab-r2 ping -c 4 10.1.100.1</pre>
+<p>Expected: 0% packet loss. Do not look at BGP until this works.</p>
+
+<h3>Step 19. Confirm zebra and bgpd</h3>
+<pre>docker exec clab-pytest-lab-r1 ps aux | grep -E 'zebra|bgpd'
+docker exec clab-pytest-lab-r2 ps aux | grep -E 'zebra|bgpd'
+docker exec clab-pytest-lab-r1 vtysh -c "show zebra"
+docker exec clab-pytest-lab-r2 vtysh -c "show zebra"</pre>
+<p>You may see: Can't open configuration file /etc/frr/vtysh.conf. If vtysh still prints FRR output, ignore that warning in this lab.</p>
+
+<h3>Step 20. BGP summary</h3>
+<pre>docker exec clab-pytest-lab-r1 vtysh -c "show ip bgp summary"
+docker exec clab-pytest-lab-r2 vtysh -c "show ip bgp summary"</pre>
+<p>Expected intent:</p>
+<pre>R1: local AS 65001, neighbor 10.1.100.2, remote AS 65002
+R2: local AS 65002, neighbor 10.1.100.1, remote AS 65001</pre>
+<p>The neighbor must not stay in Active, Idle, or (Policy). Wait 10–20 seconds and run the command again if the session is still coming up.</p>
+
+<h3>Step 21. BGP routes</h3>
+<pre>docker exec clab-pytest-lab-r1 vtysh -c "show ip route bgp"
+docker exec clab-pytest-lab-r2 vtysh -c "show ip route bgp"</pre>
+<p>Expected:</p>
+<pre>R1: 2.2.2.2/32 via 10.1.100.2
+R2: 1.1.1.1/32 via 10.1.100.1</pre>
+
+<h3>Step 22. Loopback ping (end-to-end)</h3>
+<pre>docker exec clab-pytest-lab-r1 ping -c 3 2.2.2.2
+docker exec clab-pytest-lab-r2 ping -c 3 1.1.1.1</pre>
+<p>Expected: 0% packet loss. This is the network goal of the lab. Python only automates this proof.</p>
+</div>
+
+<div class="part">
+<h2>Part F — SSH, Python, and Netmiko</h2>
+
+<h3>Step 23. SSH by hand</h3>
+<pre>ssh root@172.20.20.11</pre>
+<p>Password: admin (unless you changed it). First login may ask to trust the host key. Type yes.</p>
+<p>Inside R1:</p>
+<pre>vtysh -c "show ip bgp summary"
+exit</pre>
+<p>Repeat:</p>
+<pre>ssh root@172.20.20.12</pre>
+<p>If SSH fails after you destroy and redeploy the lab, old host keys are stale:</p>
+<pre>ssh-keygen -R 172.20.20.11
+ssh-keygen -R 172.20.20.12</pre>
+<p>Port check:</p>
+<pre>nc -zv 172.20.20.11 22
+nc -zv 172.20.20.12 22</pre>
+<p>Manual SSH must work before you debug Netmiko.</p>
+
+<h3>Step 24. Python virtual environment</h3>
+<pre>cd ~/Network_Automation/Containerlab_Python_Labs
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt</pre>
+<p>Verify:</p>
+<pre>pytest --version
+python -c "import netmiko; print(netmiko.__version__)"</pre>
+<p>Every new terminal must run source .venv/bin/activate again. The prompt usually shows (.venv).</p>
+
+<h3>Step 25. Netmiko script for R1</h3>
+<pre>export LAB_USERNAME='root'
+export LAB_PASSWORD='admin'
+python scripts/bgp_check.py</pre>
+<p>This script uses lab_config.py (host 172.20.20.11, user root, password admin). It connects with Netmiko device_type linux and runs vtysh -c "show ip bgp summary".</p>
+<p>Expected: Connected successfully to R1, then BGP summary text.</p>
+
+<h3>Step 26. Netmiko script for both routers</h3>
+<pre>python scripts/Both_Router_bgp_check.py</pre>
+<p>This script requires LAB_PASSWORD in the environment. Expected: BGP summary and BGP routes from R1 and R2.</p>
+</div>
+
+<div class="part">
+<h2>Part G — pytest (six tests)</h2>
+<p>The six tests are:</p>
+<ol>
+<li>R1 BGP neighbor is valid (AS 65001, neighbor 10.1.100.2 AS 65002, not Active/Idle/Policy)</li>
+<li>R2 BGP neighbor is valid (AS 65002, neighbor 10.1.100.1 AS 65001)</li>
+<li>R1 learned 2.2.2.2/32 via 10.1.100.2</li>
+<li>R2 learned 1.1.1.1/32 via 10.1.100.1</li>
+<li>R1 can ping 2.2.2.2 with 0% loss</li>
+<li>R2 can ping 1.1.1.1 with 0% loss</li>
+</ol>
+<p>tests/conftest.py opens one SSH session per router for the whole pytest session. Username defaults to root, password comes from <code>LAB_PASSWORD</code>, and hosts are 172.20.20.11 and 172.20.20.12.</p>
+
+<h3>Step 27. Run pytest</h3>
+<pre>cd ~/Network_Automation/Containerlab_Python_Labs
+source .venv/bin/activate
+export LAB_USERNAME='root'
+export LAB_PASSWORD='admin'
+pytest -v -s tests/test_bgp.py tests/test_ping.py</pre>
+<p>Always name those two files. That avoids collecting leftover tests.</p>
+<p>Expected last line: 6 passed.</p>
+
+<h3>Step 28. Write JUnit XML</h3>
+<pre>mkdir -p reports
+pytest -v -s tests/test_bgp.py tests/test_ping.py --junitxml=reports/results.xml
+ls -lh reports/results.xml</pre>
+<p>Or:</p>
+<pre>bash scripts/run_tests.sh</pre>
+<p>Jenkins later reads this XML so a failed test still shows which assertion failed.</p>
+</div>
+
+<div class="part">
+<h2>Part H — Jenkins on the same Ubuntu VM (optional CI)</h2>
+<p>Do this only after pytest already passes on the host. If pytest fails on the host, Jenkins will fail too.</p>
+<p>Classroom design: Jenkins is a Docker container with --privileged, --network host, --pid host, and the host Docker socket. It copies the Git checkout to a host path, then Containerlab talks to the host Docker daemon.</p>
+
+<h3>Step 29. Build the Jenkins image</h3>
+<pre>cd ~/Network_Automation/Containerlab_Python_Labs
+docker build -t network-jenkins:latest -f jenkins/Dockerfile .</pre>
+
+<h3>Step 30. Persistent data and a host-visible CI folder</h3>
+<p>The Jenkinsfile uses:</p>
+<pre>CI_DIR = '/home/jenkins/ci/network-testing'</pre>
+<p>If your Ubuntu username is ajay, create that folder. If your username is different, either create $HOME/jenkins-ci as well, or change CI_DIR in Jenkinsfile and the docker run -v line to your home directory. Both places must match.</p>
+<pre>docker volume create jenkins_home
+mkdir -p $HOME/jenkins-ci
+# if you are not user ajay, also:
+# mkdir -p /home/$USER/jenkins-ci
+# and edit Jenkinsfile CI_DIR plus the -v line below</pre>
+
+<h3>Step 31. Docker group ID</h3>
+<pre>DOCKER_GID=$(getent group docker | cut -d: -f3)
+echo "$DOCKER_GID"</pre>
+<p>Do not guess the number. It is different on different computers.</p>
+
+<h3>Step 32. Start Jenkins</h3>
+<pre>docker run -d \
+  --name jenkins \
+  --restart unless-stopped \
+  --privileged \
+  --network host \
+  --pid host \
+  -v jenkins_home:/var/jenkins_home \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /var/run/netns:/var/run/netns \
+  -v $HOME/jenkins-ci:$HOME/jenkins-ci \
+  --group-add "$DOCKER_GID" \
+  network-jenkins:latest</pre>
+<p>Do not add -p 8080:8080. Host networking already uses host port 8080.</p>
+<pre>docker ps
+docker logs jenkins
+docker exec jenkins docker ps
+docker exec jenkins containerlab version
+docker exec jenkins id jenkins</pre>
+<p>jenkins should belong to clab_admins. docker ps inside Jenkins should list containers.</p>
+
+<h3>Step 33. Unlock Jenkins in the browser</h3>
+<pre>hostname -I
+docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword</pre>
+<p>Open http://YOUR_UBUNTU_IP:8080 paste the password, install suggested plugins, create an admin user. Do not put this password in Git.</p>
+
+<h3>Step 34. GitHub credential (private repo)</h3>
+<p>Manage Jenkins → Credentials → System → Global credentials → Add Credentials. Use a GitHub personal access token with repo read access. Do not write the token into Jenkinsfile.</p>
+
+<h3>Step 35. Create the Pipeline job</h3>
+<pre>New Item → Network-Testing-Pipeline → Pipeline
+
+Definition:       Pipeline script from SCM
+SCM:              Git
+Repository URL:   https://github.com/ajayyadav941/Network_Automation.git
+Credentials:      the GitHub credential you added
+Branch Specifier: */main
+Script Path:      Containerlab_Python_Labs/Jenkinsfile</pre>
+<p>Script Path must be Containerlab_Python_Labs/Jenkinsfile, not the old Containerlab_Python_Labs path.</p>
+<p>The image frr-netmiko:latest must already exist on the Ubuntu host (Step 8). The <code>LAB_PASSWORD</code> used by Jenkins credentials must match the password used when building that image.</p>
+
+<h3>Step 36. What the pipeline does</h3>
+<pre>Environment Check
+  ↓
+Copy checkout to /home/jenkins/ci/network-testing
+  ↓
+Create .jenkins-venv (do not reuse your laptop .venv)
+  ↓
+Destroy any old lab
+  ↓
+Deploy topology
+  ↓
+Wait until SSH port 22 is open
+  ↓
+Wait until zebra and bgpd answer vtysh
+  ↓
+Print BGP summary and BGP routes
+  ↓
+pytest 6 tests + JUnit XML
+  ↓
+Always: publish JUnit and destroy the lab</pre>
+<p>A container in “running” state is not enough. SSH and FRR must be ready.</p>
+<p>Why copy to $HOME/jenkins-ci: Containerlab uses the host Docker daemon. Bind-mount source paths must exist on Ubuntu, not only inside Jenkins’ volume workspace.</p>
+</div>
+
+<div class="part">
+<h2>Part I — Break BGP on purpose, then fix it</h2>
+<p>This proves pytest and Jenkins fail for a real network mistake, not because Ubuntu is broken.</p>
+
+<h3>Step 37. Wrong remote-AS on R2</h3>
+<p>Edit configs/r2/bgpd.conf. Change:</p>
+<pre>neighbor 10.1.100.1 remote-as 65001</pre>
+<p>to:</p>
+<pre>neighbor 10.1.100.1 remote-as 65100</pre>
+<p>Redeploy:</p>
+<pre>cd ~/Network_Automation/Containerlab_Python_Labs
+containerlab destroy -t topology/lab.clab.yml --cleanup || true
+containerlab deploy -t topology/lab.clab.yml</pre>
+<p>Wait for FRR, then:</p>
+<pre>source .venv/bin/activate
+pytest -v -s tests/test_bgp.py tests/test_ping.py</pre>
+<p>Expected: containers up, SSH up, FRR up, BGP wrong, pytest FAIL.</p>
+
+<h3>Step 38. Restore</h3>
+<p>Put remote-as 65001 back. Redeploy. pytest should show 6 passed.</p>
+</div>
+
+<div class="part">
+<h2>Part J — If something fails</h2>
+<div class="stack">
+<p><strong>docker ps permission denied</strong><br><code>usermod -aG docker $USER</code>, then log out and in, or run <code>newgrp docker</code>.</p>
+<p><strong>containerlab deploy: image not found</strong><br>Build <code>frr-netmiko:latest</code> from <code>docker/Dockerfile</code> with <code>LAB_PASSWORD</code>.</p>
+<p><strong>Wrong folder after clone</strong><br><code>cd ~/Network_Automation/Containerlab_Python_Labs</code></p>
+<p><strong>R1/R2 not running</strong><br><code>docker ps -a</code>; <code>docker logs clab-pytest-lab-r1</code>; <code>docker logs clab-pytest-lab-r2</code></p>
+<p><strong>No eth1 address</strong><br>Check binds in <code>lab.clab.yml</code> and <code>configs/r1/zebra.conf</code>.</p>
+<p><strong>Peer ping fails</strong><br>Fix Layer 3 on <code>10.1.100.0/30</code> before BGP.</p>
+<p><strong>zebra/bgpd missing</strong><br>Inside the container, check <code>/etc/frr/daemons</code>; <code>zebra=yes</code> and <code>bgpd=yes</code>.</p>
+<p><strong>BGP Active/Idle</strong><br>Check peer ping, neighbor IP, remote-AS, and the bgpd process.</p>
+<p><strong>BGP (Policy)</strong><br>Check <code>no bgp ebgp-requires-policy</code> on both routers.</p>
+<p><strong>Session up, no /32 route</strong><br>Check the network statement, loopback address, and address-family activation.</p>
+<p><strong>SSH fails</strong><br>Check <code>nc -zv 172.20.20.11 22</code>, remove stale host keys with <code>ssh-keygen -R</code>, verify the password, and rebuild the image if the password differs.</p>
+<p><strong>import netmiko fails</strong><br><code>source .venv/bin/activate</code> then <code>pip install -r requirements.txt</code>.</p>
+<p><strong>pytest 6 tests not collected</strong><br><code>pytest -v -s tests/test_bgp.py tests/test_ping.py</code></p>
+<p><strong>Jenkins Script Path 404</strong><br>Use <code>Containerlab_Python_Labs/Jenkinsfile</code>.</p>
+<p><strong>Jenkins not in clab_admins</strong><br>Rebuild <code>jenkins/Dockerfile</code> and recreate the container.</p>
+<p><strong>Bind mount path missing in CI</strong><br>Deploy from the host-visible <code>CI_DIR</code>, not from the <code>jenkins_home</code> workspace only.</p>
+<p><strong>Git dubious ownership</strong><br><code>sudo chown -R $USER:$USER ~/Network_Automation</code></p>
+</div>
+
+<h3>Step 39. Fresh start for the next class</h3>
+<pre>cd ~/Network_Automation/Containerlab_Python_Labs
+containerlab destroy -t topology/lab.clab.yml --cleanup || true
+docker images | grep frr-netmiko
+containerlab deploy -t topology/lab.clab.yml
+containerlab inspect -t topology/lab.clab.yml</pre>
+<p>Destroy removes running containers. It does not remove frr-netmiko:latest. You rebuild the image only when the Dockerfile or password changes.</p>
+</div>
+
+<div class="part">
+<h2>Final checklist</h2>
+<pre>[ ] Docker works without sudo for your user
+[ ] containerlab version works
+[ ] frr-netmiko:latest exists (password admin)
+[ ] Working directory is Containerlab_Python_Labs
+[ ] R1 = 172.20.20.11 and R2 = 172.20.20.12
+[ ] 10.1.100.1 ping 10.1.100.2 succeeds
+[ ] zebra and bgpd are running
+[ ] BGP is Established (not Active, Idle, Policy)
+[ ] R1 has 2.2.2.2/32 via 10.1.100.2
+[ ] R2 has 1.1.1.1/32 via 10.1.100.1
+[ ] Loopback ping works both ways
+[ ] ssh root@172.20.20.11 works
+[ ] python scripts/bgp_check.py works
+[ ] pytest reports 6 passed
+[ ] reports/results.xml exists
+[ ] (optional) Jenkins job uses Containerlab_Python_Labs/Jenkinsfile
+[ ] (optional) intentional wrong AS makes pytest FAIL
+[ ] restored config makes pytest PASS</pre>
+</div>
+
+<div class="part">
+<h2>Practice</h2>
+<p>This section is separate from the steps. Each item has a question and then the answer.</p>
+
+<div class="qa">
+<p><strong>Practice 1 — Working folder</strong></p>
+<p>Question: After you clone the GitHub repository, which directory must you cd into before docker build and containerlab deploy?</p>
+<p>Answer:</p>
+<pre>~/Network_Automation/Containerlab_Python_Labs
+
+Do not use the old name Containerlab_Python_Labs.</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 2 — Topology numbers</strong></p>
+<p>Question: Write R1 and R2 AS numbers, eth1 IPs, loopbacks, and management IPs.</p>
+<p>Answer:</p>
+<pre>R1: AS 65001, eth1 10.1.100.1/30, lo 1.1.1.1/32, mgmt 172.20.20.11
+R2: AS 65002, eth1 10.1.100.2/30, lo 2.2.2.2/32, mgmt 172.20.20.12</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 3 — Image versus container</strong></p>
+<p>Question: What is frr-netmiko:latest? What are clab-pytest-lab-r1 and clab-pytest-lab-r2? Does containerlab destroy delete the image?</p>
+<p>Answer:</p>
+<pre>frr-netmiko:latest is the reusable Docker image (blueprint with FRR + SSH).
+clab-pytest-lab-r1 and clab-pytest-lab-r2 are running containers.
+containerlab destroy removes the containers, not the image.</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 4 — Build command</strong></p>
+<p>Question: Write the docker build command for the FRR SSH image.</p>
+<p>Answer:</p>
+<pre>cd ~/Network_Automation/Containerlab_Python_Labs
+export LAB_PASSWORD='admin'
+docker build --build-arg LAB_PASSWORD="$LAB_PASSWORD" \
+  -t frr-netmiko:latest -f docker/Dockerfile .</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 5 — Deploy and inspect</strong></p>
+<p>Question: Which two Containerlab commands start the lab and show the management IPs?</p>
+<p>Answer:</p>
+<pre>containerlab deploy -t topology/lab.clab.yml
+containerlab inspect -t topology/lab.clab.yml</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 6 — Order of checks</strong></p>
+<p>Question: A fresher sees BGP Idle. What should they prove first?</p>
+<p>Answer:</p>
+<pre>Prove eth1 addresses and ping 10.1.100.1 &lt;-&gt; 10.1.100.2 first.
+Do not debug Netmiko or Jenkins until the peer ping works.</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 7 — Expected BGP routes</strong></p>
+<p>Question: What route must R1 learn? What route must R2 learn?</p>
+<p>Answer:</p>
+<pre>R1 learns 2.2.2.2/32 via 10.1.100.2
+R2 learns 1.1.1.1/32 via 10.1.100.1</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 8 — Why (Policy) appears</strong></p>
+<p>Question: BGP shows (Policy). Which line is missing in bgpd.conf?</p>
+<p>Answer:</p>
+<pre>no bgp ebgp-requires-policy
+
+It must be present on both R1 and R2 in this classroom lab.</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 9 — Six pytest tests</strong></p>
+<p>Question: Name the six tests and the pytest command that runs only those tests.</p>
+<p>Answer:</p>
+<pre>1. R1 BGP neighbor
+2. R2 BGP neighbor
+3. R1 learns R2 loopback
+4. R2 learns R1 loopback
+5. R1 pings 2.2.2.2
+6. R2 pings 1.1.1.1
+
+pytest -v -s tests/test_bgp.py tests/test_ping.py</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 10 — SSH versus management IP</strong></p>
+<p>Question: Which IP do you SSH to for R1? Which IP is the BGP neighbor on R1?</p>
+<p>Answer:</p>
+<pre>SSH to R1: 172.20.20.11 (management)
+BGP neighbor on R1: 10.1.100.2 (R2 eth1)
+
+Do not mix these two addresses.</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 11 — Jenkins Script Path</strong></p>
+<p>Question: What Script Path must the Jenkins job use?</p>
+<p>Answer:</p>
+<pre>Containerlab_Python_Labs/Jenkinsfile</pre>
+</div>
+
+<div class="qa">
+<p><strong>Practice 12 — Why copy to $HOME/jenkins-ci</strong></p>
+<p>Question: Why does Jenkins copy the project out of $WORKSPACE before containerlab deploy?</p>
+<p>Answer:</p>
+<pre>Containerlab uses the host Docker daemon.
+Bind-mount files (configs/r1/...) must exist as real paths on Ubuntu.
+Jenkins $WORKSPACE lives in a Docker volume, so it is the wrong host path.
+The pipeline copies the checkout to a host-visible CI directory first.</pre>
+</div>
+</div>
+
+</body>
+</html>
